@@ -1,720 +1,765 @@
--- ==============================================
---   Advanced RemoteSpy v2  by fearliam
---   Works on PC + Mobile | RemoteEvent + RemoteFunction
---   Features: Script Gen, Blacklist, Pause, Group, Pin, Export
--- ==============================================
+-- ================================================================
+-- Simple RemoteSpy (Enhanced) by fearliam
+-- Responsive (mobile + desktop), with advanced features:
+--   * Incoming + Outgoing remote hooks (Events & Functions)
+--   * Tabs: All / Incoming / Outgoing
+--   * Per-remote call counter (auto-merge duplicates)
+--   * Auto-generated reproduction script per log
+--   * Copy / Generate / Block / Delete per entry
+--   * Pause / Resume logging
+--   * Export all logs to clipboard
+--   * Search filter
+--   * Draggable + resizable window (desktop)
+--   * Floating toggle button (great for mobile)
+--   * Keybind toggle: RightShift (PC) / floating icon (Mobile)
+-- ================================================================
 
-local Players        = game:GetService("Players")
-local UIS            = game:GetService("UserInputService")
-local RunService     = game:GetService("RunService")
-local TweenService   = game:GetService("TweenService")
+-- ---------- SERVICES ----------
+local Players       = game:GetService("Players")
+local UIS           = game:GetService("UserInputService")
+local RunService    = game:GetService("RunService")
+local TweenService  = game:GetService("TweenService")
 
-local player         = Players.LocalPlayer
-local camera         = workspace.CurrentCamera
-local isMobile       = UIS.TouchEnabled and not UIS.MouseEnabled
+local player = Players.LocalPlayer
 
--- ── Screen dimensions ────────────────────────────────────────────────────────
-local VP = camera.ViewportSize
-local SW, SH = VP.X, VP.Y
+-- ---------- CLEANUP PREVIOUS ----------
+local pg = player:WaitForChild("PlayerGui")
+for _, v in ipairs(pg:GetChildren()) do
+	if v.Name == "RemoteLoggerGui" or v.Name == "RemoteLoggerToggle" then
+		v:Destroy()
+	end
+end
 
--- Responsive dimensions
-local PANEL_W = isMobile and math.min(SW - 20, 420) or 460
-local PANEL_H = isMobile and math.min(SH - 60, 560) or 540
-local START_X = isMobile and (SW - PANEL_W) / 2 or 20
-local START_Y = isMobile and (SH - PANEL_H) / 2 or (SH - PANEL_H) / 2
+-- ---------- EXPLOIT SHIMS (safe fallbacks) ----------
+local setclipboard = (setclipboard) or (syn and syn.write_clipboard)
+	or (writeclipboard) or (toclipboard) or function() end
 
--- ── Colours ──────────────────────────────────────────────────────────────────
+local hookmetamethod   = hookmetamethod
+local getnamecallmethod = getnamecallmethod or (getrawmetatable and function()
+	return debug.getinfo(2, "n").name
+end)
+local checkcaller = checkcaller or function() return false end
+
+-- ---------- RESPONSIVE SIZING ----------
+local camera   = workspace.CurrentCamera
+local viewport = camera.ViewportSize
+local isMobile = UIS.TouchEnabled and not UIS.MouseEnabled
+local isSmall  = viewport.X < 700
+
+local UI_SCALE = isSmall and 1.0 or 0.9
+local BTN_H    = isMobile and 34 or 26
+local FONT_S   = isMobile and 15 or 14
+
+-- ---------- COLORS ----------
 local C = {
-	bg        = Color3.fromRGB(14,14,20),
-	surface   = Color3.fromRGB(22,22,32),
-	card      = Color3.fromRGB(28,28,42),
-	border    = Color3.fromRGB(45,45,70),
-	accent    = Color3.fromRGB(90,130,255),
-	green     = Color3.fromRGB(0,210,120),
-	blue      = Color3.fromRGB(80,160,255),
-	red       = Color3.fromRGB(200,60,60),
-	yellow    = Color3.fromRGB(220,180,0),
-	text      = Color3.fromRGB(220,220,240),
-	muted     = Color3.fromRGB(100,100,140),
-	white     = Color3.new(1,1,1),
+	bg     = Color3.fromRGB(22, 22, 26),
+	panel  = Color3.fromRGB(32, 32, 38),
+	panel2 = Color3.fromRGB(42, 42, 50),
+	accent = Color3.fromRGB(90, 140, 255),
+	good   = Color3.fromRGB(80, 200, 120),
+	warn   = Color3.fromRGB(230, 170, 70),
+	bad    = Color3.fromRGB(220, 80, 80),
+	text   = Color3.fromRGB(235, 235, 240),
+	mute   = Color3.fromRGB(160, 160, 170),
 }
 
--- ── Helpers ───────────────────────────────────────────────────────────────────
-local function corner(p, r)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, r or 8)
-	c.Parent = p
-	return c
-end
-local function stroke(p, color, thick)
-	local s = Instance.new("UIStroke")
-	s.Color = color or C.border
-	s.Thickness = thick or 1
-	s.Parent = p
-	return s
-end
-local function pad(p, px)
-	local u = Instance.new("UIPadding")
-	u.PaddingLeft   = UDim.new(0,px)
-	u.PaddingRight  = UDim.new(0,px)
-	u.PaddingTop    = UDim.new(0,px)
-	u.PaddingBottom = UDim.new(0,px)
-	u.Parent = p
-end
-local function tween(obj, props, t, style, dir)
-	TweenService:Create(obj,
-		TweenInfo.new(t or .18, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out),
-		props):Play()
-end
-local function clip(text)
-	pcall(function()
-		if setclipboard then setclipboard(text)
-		elseif syn and syn.write_file then syn.write_file("RemoteSpy_Export.txt", text)
-		end
-	end)
-end
-
--- ── Serialiser ────────────────────────────────────────────────────────────────
-local function serialize(v, depth)
-	depth = depth or 0
-	if depth > 4 then return "..." end
-	local t = typeof(v)
-	if t=="string"   then return string.format("%q",v) end
-	if t=="number"   then return tostring(v) end
-	if t=="boolean"  then return tostring(v) end
-	if t=="nil"      then return "nil" end
-	if t=="Vector3"  then return ("Vector3.new(%g,%g,%g)"):format(v.X,v.Y,v.Z) end
-	if t=="Vector2"  then return ("Vector2.new(%g,%g)"):format(v.X,v.Y) end
-	if t=="CFrame"   then local p=v.Position return ("CFrame.new(%g,%g,%g)"):format(p.X,p.Y,p.Z) end
-	if t=="Color3"   then return ("Color3.fromRGB(%d,%d,%d)"):format(v.R*255,v.G*255,v.B*255) end
-	if t=="UDim2"    then return ("UDim2.new(%g,%g,%g,%g)"):format(v.X.Scale,v.X.Offset,v.Y.Scale,v.Y.Offset) end
-	if t=="Enum"     then return tostring(v) end
-	if t=="Instance" then
-		local ok,n = pcall(function() return v:GetFullName() end)
-		return ok and ("game:GetService(\""..v.ClassName.."\")") or "Instance(?)"
-	end
-	if t=="table" then
-		if next(v)==nil then return "{}" end
-		local parts,i = {},0
-		for k,val in pairs(v) do
-			i+=1; if i>8 then parts[#parts+1]="..."; break end
-			parts[#parts+1] = ("[%s]=%s"):format(tostring(k), serialize(val,depth+1))
-		end
-		return "{"..table.concat(parts,", ").."}"
-	end
-	return t.."("..tostring(v)..")"
-end
-
-local function formatArgs(args)
-	if #args==0 then return "(no args)" end
-	local t={}
-	for i,v in ipairs(args) do t[#t+1]=("[%d] %s"):format(i,serialize(v)) end
-	return table.concat(t,"\n")
-end
-
--- ── Script generator ─────────────────────────────────────────────────────────
-local function genScript(remote, args, rtype)
-	local path = remote:GetFullName()
-	local parts = {}
-	for p in path:gmatch("[^%.]+") do
-		if p~="game" then parts[#parts+1]=p end
-	end
-	local expr = "game"
-	for _,p in ipairs(parts) do
-		expr = expr..string.format(':WaitForChild("%s")',p)
-	end
-
-	local stubs={}
-	for _,v in ipairs(args) do stubs[#stubs+1]=serialize(v) end
-
-	local lines = {
-		"-- [RemoteSpy] Auto-generated script",
-		"-- Remote : "..path,
-		"-- Type   : "..(rtype or "RemoteEvent"),
-		"-- Args   : "..#args,
-		"",
-		"local remote = "..expr,
-		"",
-	}
-	if rtype=="RemoteFunction" then
-		lines[#lines+1] = "local result = remote:InvokeServer("..table.concat(stubs,", ")..")"
-		lines[#lines+1] = 'print("[RemoteSpy] Result:", result)'
-	else
-		lines[#lines+1] = "remote:FireServer("..table.concat(stubs,", ")..")"
-	end
-	return table.concat(lines,"\n")
-end
-
--- ── State ─────────────────────────────────────────────────────────────────────
-local logs        = {}      -- box → {text,rtype,remote,args,count,pinned}
-local blacklist   = {}      -- remote path → true
-local logCount    = 0
-local order       = 0
-local paused      = false
-local minimized   = false
-local savedH
-
--- ── ScreenGui ─────────────────────────────────────────────────────────────────
+-- ---------- ROOT GUI ----------
 local gui = Instance.new("ScreenGui")
-gui.Name           = "RSpy2"
-gui.ResetOnSpawn   = false
+gui.Name = "RemoteLoggerGui"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui.DisplayOrder   = 999
-gui.Parent         = player:WaitForChild("PlayerGui")
+gui.Parent = pg
 
--- Main panel
+-- Helpers
+local function corner(p, r) local c = Instance.new("UICorner", p) c.CornerRadius = UDim.new(0, r or 8) return c end
+local function stroke(p, col, t) local s = Instance.new("UIStroke", p) s.Color = col or C.panel2 s.Thickness = t or 1 s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border return s end
+local function pad(p, n) local u = Instance.new("UIPadding", p) u.PaddingTop = UDim.new(0,n) u.PaddingBottom = UDim.new(0,n) u.PaddingLeft = UDim.new(0,n) u.PaddingRight = UDim.new(0,n) return u end
+
+-- ---------- MAIN FRAME ----------
 local main = Instance.new("Frame")
-main.Size            = UDim2.new(0, PANEL_W, 0, PANEL_H)
-main.Position        = UDim2.new(0, START_X, 0, START_Y)
-main.BackgroundColor3= C.bg
+main.Name = "Main"
+main.AnchorPoint = Vector2.new(0.5, 0.5)
+main.Position = UDim2.fromScale(0.5, 0.5)
+
+if isSmall then
+	main.Size = UDim2.new(0.95, 0, 0.8, 0)
+else
+	main.Size = UDim2.new(0, math.clamp(viewport.X * 0.5, 420, 720), 0, math.clamp(viewport.Y * 0.65, 360, 560))
+end
+
+main.BackgroundColor3 = C.bg
 main.BorderSizePixel = 0
-main.ClipsDescendants= true
-main.Active          = true
-main.Parent          = gui
-corner(main, 14)
-stroke(main, C.border, 1)
+main.Active = true
+main.ClipsDescendants = true
+main.Parent = gui
+corner(main, 12)
+stroke(main, C.panel2, 1)
 
--- Accent top bar
-local accentBar = Instance.new("Frame")
-accentBar.Size            = UDim2.new(1,0,0,3)
-accentBar.BackgroundColor3= C.accent
-accentBar.BorderSizePixel = 0
-accentBar.ZIndex          = 5
-accentBar.Parent          = main
+-- Min window size we won't shrink below when resizing
+local MIN_W, MIN_H = 340, 280
 
--- ── Header ────────────────────────────────────────────────────────────────────
+-- ---------- HEADER ----------
 local header = Instance.new("Frame")
-header.Size            = UDim2.new(1,0,0,42)
-header.Position        = UDim2.new(0,0,0,3)
-header.BackgroundColor3= C.surface
+header.Size = UDim2.new(1, 0, 0, 40)
+header.BackgroundColor3 = C.panel
 header.BorderSizePixel = 0
-header.ZIndex          = 4
-header.Parent          = main
+header.Parent = main
 
-local titleLbl = Instance.new("TextLabel")
-titleLbl.Size             = UDim2.new(1,-180,1,0)
-titleLbl.Position         = UDim2.new(0,14,0,0)
-titleLbl.Text             = "⚡ RemoteSpy"
-titleLbl.Font             = Enum.Font.GothamBold
-titleLbl.TextSize         = 16
-titleLbl.TextColor3       = C.text
-titleLbl.BackgroundTransparency=1
-titleLbl.TextXAlignment   = Enum.TextXAlignment.Left
-titleLbl.ZIndex           = 5
-titleLbl.Parent           = header
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -110, 1, 0)
+title.Position = UDim2.new(0, 12, 0, 0)
+title.Text = "RemoteSpy  •  by fearliam"
+title.Font = Enum.Font.GothamBold
+title.TextSize = 16
+title.TextColor3 = C.text
+title.BackgroundTransparency = 1
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
 
-local countLbl = Instance.new("TextLabel")
-countLbl.Size             = UDim2.new(0,70,1,0)
-countLbl.Position         = UDim2.new(1,-180,0,0)
-countLbl.Text             = "0 logs"
-countLbl.Font             = Enum.Font.Gotham
-countLbl.TextSize         = 12
-countLbl.TextColor3       = C.muted
-countLbl.BackgroundTransparency=1
-countLbl.TextXAlignment   = Enum.TextXAlignment.Right
-countLbl.ZIndex           = 5
-countLbl.Parent           = header
-
--- Header buttons helper
-local function hBtn(txt, xOff, bg)
+local function headerBtn(txt, xOff, color)
 	local b = Instance.new("TextButton")
-	b.Size            = UDim2.new(0, 30, 0, 26)
-	b.Position        = UDim2.new(1, xOff, 0.5, -13)
-	b.Text            = txt
-	b.Font            = Enum.Font.GothamBold
-	b.TextSize        = 13
-	b.BackgroundColor3= bg or C.surface
-	b.TextColor3      = C.white
+	b.Size = UDim2.new(0, 30, 0, 26)
+	b.Position = UDim2.new(1, xOff, 0.5, -13)
+	b.Text = txt
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 16
+	b.TextColor3 = C.text
+	b.BackgroundColor3 = color or C.panel2
 	b.BorderSizePixel = 0
-	b.ZIndex          = 6
-	b.Parent          = header
+	b.AutoButtonColor = true
+	b.Parent = header
 	corner(b, 6)
-	stroke(b, C.border)
 	return b
 end
-local closeBtn = hBtn("✕", -38, C.red)
-local minBtn   = hBtn("–", -74)
 
--- ── Toolbar ───────────────────────────────────────────────────────────────────
-local toolbar = Instance.new("Frame")
-toolbar.Size            = UDim2.new(1,-16,0,30)
-toolbar.Position        = UDim2.new(0,8,0,50)
-toolbar.BackgroundTransparency=1
-toolbar.ZIndex          = 4
-toolbar.Parent          = main
+local btnMin   = headerBtn("–", -76)
+local btnClose = headerBtn("X", -40, C.bad)
 
--- Search box
-local searchBox = Instance.new("TextBox")
-searchBox.Size            = UDim2.new(1,-100,1,0)
-searchBox.BackgroundColor3= C.surface
-searchBox.BorderSizePixel = 0
-searchBox.PlaceholderText = "🔍 Search remotes..."
-searchBox.Text            = ""
-searchBox.Font            = Enum.Font.Gotham
-searchBox.TextSize        = 13
-searchBox.TextColor3      = C.text
-searchBox.PlaceholderColor3=C.muted
-searchBox.ClearTextOnFocus= false
-searchBox.ZIndex          = 5
-searchBox.Parent          = toolbar
-corner(searchBox, 8)
-pad(searchBox, 10)
-stroke(searchBox, C.border)
+-- ---------- DRAG (header) ----------
+do
+	local dragging, dStart, sPos
+	local function begin(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			dStart = i.Position
+			sPos = main.Position
+		end
+	end
+	local function update(i)
+		if not dragging then return end
+		if i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch then
+			local d = i.Position - dStart
+			main.Position = UDim2.new(sPos.X.Scale, sPos.X.Offset + d.X, sPos.Y.Scale, sPos.Y.Offset + d.Y)
+		end
+	end
+	local function stop(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end
+	header.InputBegan:Connect(begin)
+	header.InputChanged:Connect(update)
+	UIS.InputEnded:Connect(stop)
+end
 
--- Pause button
-local pauseBtn = Instance.new("TextButton")
-pauseBtn.Size            = UDim2.new(0,46,1,0)
-pauseBtn.Position        = UDim2.new(1,-98,0,0)
-pauseBtn.Text            = "⏸"
-pauseBtn.Font            = Enum.Font.GothamBold
-pauseBtn.TextSize        = 14
-pauseBtn.BackgroundColor3= C.surface
-pauseBtn.TextColor3      = C.yellow
-pauseBtn.BorderSizePixel = 0
-pauseBtn.ZIndex          = 5
-pauseBtn.Parent          = toolbar
-corner(pauseBtn, 8)
-stroke(pauseBtn, C.border)
+-- ---------- TAB BAR ----------
+local tabBar = Instance.new("Frame")
+tabBar.Size = UDim2.new(1, -16, 0, 32)
+tabBar.Position = UDim2.new(0, 8, 0, 48)
+tabBar.BackgroundColor3 = C.panel
+tabBar.BorderSizePixel = 0
+tabBar.Parent = main
+corner(tabBar, 8)
 
--- Clear button
-local clearBtn = Instance.new("TextButton")
-clearBtn.Size            = UDim2.new(0,46,1,0)
-clearBtn.Position        = UDim2.new(1,-48,0,0)
-clearBtn.Text            = "🗑"
-clearBtn.Font            = Enum.Font.GothamBold
-clearBtn.TextSize        = 14
-clearBtn.BackgroundColor3= C.red
-clearBtn.TextColor3      = C.white
-clearBtn.BorderSizePixel = 0
-clearBtn.ZIndex          = 5
-clearBtn.Parent          = toolbar
-corner(clearBtn, 8)
+local tabLayout = Instance.new("UIListLayout", tabBar)
+tabLayout.FillDirection = Enum.FillDirection.Horizontal
+tabLayout.Padding = UDim.new(0, 4)
+tabLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+tabLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+pad(tabBar, 4)
 
--- ── Filter chips ──────────────────────────────────────────────────────────────
-local chipRow = Instance.new("Frame")
-chipRow.Size            = UDim2.new(1,-16,0,24)
-chipRow.Position        = UDim2.new(0,8,0,86)
-chipRow.BackgroundTransparency=1
-chipRow.ZIndex          = 4
-chipRow.Parent          = main
+local currentTab = "All"
+local tabButtons = {}
 
-local chipLayout = Instance.new("UIListLayout")
-chipLayout.FillDirection= Enum.FillDirection.Horizontal
-chipLayout.Padding      = UDim.new(0,6)
-chipLayout.Parent       = chipRow
+local function setTab(name)
+	currentTab = name
+	for n, b in pairs(tabButtons) do
+		b.BackgroundColor3 = (n == name) and C.accent or C.panel2
+		b.TextColor3 = (n == name) and Color3.new(1,1,1) or C.mute
+	end
+end
 
-local filterState = {Event=true, ["Function"]=true}
-
-local function chip(label, key, active_color)
+local function makeTab(name)
 	local b = Instance.new("TextButton")
-	b.Size            = UDim2.new(0,0,1,0)
-	b.AutomaticSize   = Enum.AutomaticSize.X
-	b.Text            = label
-	b.Font            = Enum.Font.GothamBold
-	b.TextSize        = 11
-	b.BackgroundColor3= active_color
-	b.TextColor3      = C.white
+	b.Size = UDim2.new(0, 90, 1, -4)
+	b.Text = name
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 13
+	b.BackgroundColor3 = C.panel2
+	b.TextColor3 = C.mute
 	b.BorderSizePixel = 0
-	b.ZIndex          = 5
-	b.Parent          = chipRow
-	corner(b,12)
-	pad(b,8)
-	local on = true
-	b.MouseButton1Click:Connect(function()
-		on = not on
-		filterState[key] = on
-		b.BackgroundColor3 = on and active_color or C.surface
-		b.TextColor3 = on and C.white or C.muted
-		applyFilter()
-	end)
+	b.AutoButtonColor = true
+	b.Parent = tabBar
+	corner(b, 6)
+	tabButtons[name] = b
+	b.MouseButton1Click:Connect(function() setTab(name); applyFilters() end)
 	return b
 end
-chip("🟢 Events",    "Event",    C.green)
-chip("🔵 Functions", "Function", C.blue)
 
--- Export all button
-local exportBtn = Instance.new("TextButton")
-exportBtn.Size            = UDim2.new(0,0,1,0)
-exportBtn.AutomaticSize   = Enum.AutomaticSize.X
-exportBtn.Text            = "📤 Export"
-exportBtn.Font            = Enum.Font.GothamBold
-exportBtn.TextSize        = 11
-exportBtn.BackgroundColor3= C.surface
-exportBtn.TextColor3      = C.text
-exportBtn.BorderSizePixel = 0
-exportBtn.ZIndex          = 5
-exportBtn.Parent          = chipRow
-corner(exportBtn,12)
-pad(exportBtn,8)
-stroke(exportBtn, C.border)
+makeTab("All"); makeTab("Incoming"); makeTab("Outgoing")
+setTab("All")
 
--- ── Scroll area ───────────────────────────────────────────────────────────────
+-- ---------- TOOLBAR (search + actions) ----------
+local toolbar = Instance.new("Frame")
+toolbar.Size = UDim2.new(1, -16, 0, BTN_H + 4)
+toolbar.Position = UDim2.new(0, 8, 0, 88)
+toolbar.BackgroundTransparency = 1
+toolbar.Parent = main
+
+local search = Instance.new("TextBox")
+search.Size = UDim2.new(0.55, -4, 1, 0)
+search.Position = UDim2.new(0, 0, 0, 0)
+search.PlaceholderText = "Search remotes or args..."
+search.Text = ""
+search.Font = Enum.Font.Gotham
+search.TextSize = FONT_S
+search.TextColor3 = C.text
+search.PlaceholderColor3 = C.mute
+search.BackgroundColor3 = C.panel
+search.BorderSizePixel = 0
+search.ClearTextOnFocus = false
+search.TextXAlignment = Enum.TextXAlignment.Left
+search.Parent = toolbar
+corner(search, 6)
+pad(search, 8)
+
+local function actionBtn(text, color)
+	local b = Instance.new("TextButton")
+	b.Text = text
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 12
+	b.TextColor3 = C.text
+	b.BackgroundColor3 = color or C.panel2
+	b.BorderSizePixel = 0
+	b.AutoButtonColor = true
+	b.Parent = toolbar
+	corner(b, 6)
+	return b
+end
+
+local btnPause  = actionBtn("PAUSE")
+local btnExport = actionBtn("EXPORT", C.accent)
+local btnClear  = actionBtn("CLEAR", C.bad)
+
+-- layout the right-side action buttons
+do
+	local count = 3
+	local gap = 4
+	local areaX = 0.45
+	local width = (areaX - (gap * (count - 1)) / main.AbsoluteSize.X) / count
+	-- simpler: use scale math
+	btnPause.Size  = UDim2.new(0.15, -2, 1, 0)
+	btnExport.Size = UDim2.new(0.15, -2, 1, 0)
+	btnClear.Size  = UDim2.new(0.15, -2, 1, 0)
+	btnPause.Position  = UDim2.new(0.55, 4, 0, 0)
+	btnExport.Position = UDim2.new(0.70, 6, 0, 0)
+	btnClear.Position  = UDim2.new(0.85, 8, 0, 0)
+end
+
+-- ---------- STATUS BAR ----------
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -16, 0, 18)
+status.Position = UDim2.new(0, 8, 0, 88 + BTN_H + 8)
+status.BackgroundTransparency = 1
+status.Font = Enum.Font.Gotham
+status.TextSize = 12
+status.TextColor3 = C.mute
+status.Text = "0 logs  •  logging active"
+status.TextXAlignment = Enum.TextXAlignment.Left
+status.Parent = main
+
+-- ---------- SCROLL (logs) ----------
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size                = UDim2.new(1,-16,1,-122)
-scroll.Position            = UDim2.new(0,8,0,116)
-scroll.CanvasSize          = UDim2.new()
-scroll.ScrollBarThickness  = 4
-scroll.ScrollBarImageColor3= C.accent
-scroll.BackgroundTransparency=1
-scroll.BorderSizePixel     = 0
-scroll.ZIndex              = 3
-scroll.ElasticBehavior     = Enum.ElasticBehavior.Always
-scroll.Parent              = main
+scroll.Size = UDim2.new(1, -16, 1, -(88 + BTN_H + 34))
+scroll.Position = UDim2.new(0, 8, 0, 88 + BTN_H + 30)
+scroll.CanvasSize = UDim2.new()
+scroll.ScrollBarThickness = 5
+scroll.ScrollBarImageColor3 = C.accent
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.Parent = main
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.Padding   = UDim.new(0,6)
+local listLayout = Instance.new("UIListLayout", scroll)
+listLayout.Padding = UDim.new(0, 6)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent    = scroll
 
 listLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-	scroll.CanvasSize = UDim2.new(0,0,0, listLayout.AbsoluteContentSize.Y + 12)
+	scroll.CanvasSize = UDim2.new(0, 0, 0, listLayout.AbsoluteContentSize.Y + 10)
 end)
 
--- ── Filter logic ─────────────────────────────────────────────────────────────
-function applyFilter()
-	local q = searchBox.Text:lower()
-	for box, data in pairs(logs) do
-		local matchSearch = q=="" or data.text:lower():find(q,1,true)
-		local matchType   = filterState[data.rtype]
-		box.Visible = (matchSearch and matchType) and true or false
-	end
-end
-searchBox:GetPropertyChangedSignal("Text"):Connect(applyFilter)
+-- ---------- RESIZE HANDLE (desktop only) ----------
+if not isMobile then
+	local grip = Instance.new("TextButton")
+	grip.Size = UDim2.new(0, 16, 0, 16)
+	grip.AnchorPoint = Vector2.new(1, 1)
+	grip.Position = UDim2.new(1, -4, 1, -4)
+	grip.BackgroundColor3 = C.panel2
+	grip.Text = "◢"
+	grip.Font = Enum.Font.GothamBold
+	grip.TextSize = 12
+	grip.TextColor3 = C.mute
+	grip.AutoButtonColor = false
+	grip.BorderSizePixel = 0
+	grip.Parent = main
+	corner(grip, 4)
 
--- ── Update counter ────────────────────────────────────────────────────────────
-local function updateCount()
-	countLbl.Text = logCount.." log"..(logCount~=1 and "s" or "")
-end
-
--- ── Log entry builder ─────────────────────────────────────────────────────────
-local TYPE_COLOR = {
-	Event    = C.green,
-	["Function"] = C.blue,
-}
-
-local function makeBtn(parent, txt, w, bg, yOff)
-	local b = Instance.new("TextButton")
-	b.Size            = UDim2.new(0,w,0,22)
-	b.Position        = UDim2.new(1,-(w+8),0,yOff)
-	b.Text            = txt
-	b.Font            = Enum.Font.GothamBold
-	b.TextSize        = 10
-	b.BackgroundColor3= bg
-	b.TextColor3      = C.white
-	b.BorderSizePixel = 0
-	b.ZIndex          = 6
-	b.Parent          = parent
-	corner(b,5)
-	return b
-end
-
-local function createLog(remote, args, rtype)
-	order -= 1
-	logCount += 1
-	updateCount()
-
-	local path      = remote:GetFullName()
-	local name      = remote.Name
-	local argsText  = formatArgs(args)
-	local fullText  = path.."\n"..argsText
-	local tc        = TYPE_COLOR[rtype] or C.text
-	local timestamp = os.date("%H:%M:%S")
-
-	-- Card
-	local card = Instance.new("Frame")
-	card.Size            = UDim2.new(1,-4,0,0)
-	card.AutomaticSize   = Enum.AutomaticSize.Y
-	card.BackgroundColor3= C.card
-	card.BorderSizePixel = 0
-	card.LayoutOrder     = order
-	card.ZIndex          = 4
-	card.Parent          = scroll
-	corner(card, 10)
-	stroke(card, C.border)
-
-	-- Left stripe (type colour)
-	local stripe = Instance.new("Frame")
-	stripe.Size            = UDim2.new(0,3,1,0)
-	stripe.BackgroundColor3= tc
-	stripe.BorderSizePixel = 0
-	stripe.ZIndex          = 5
-	stripe.Parent          = card
-	makeCorner and corner(stripe,2)
-
-	-- Top row: badge + name + time
-	local topRow = Instance.new("Frame")
-	topRow.Size            = UDim2.new(1,-90,0,22)
-	topRow.Position        = UDim2.new(0,10,0,6)
-	topRow.BackgroundTransparency=1
-	topRow.ZIndex          = 5
-	topRow.Parent          = card
-
-	local badge = Instance.new("TextLabel")
-	badge.Size            = UDim2.new(0,70,1,0)
-	badge.Text            = rtype=="Function" and "🔵 Func" or "🟢 Event"
-	badge.Font            = Enum.Font.GothamBold
-	badge.TextSize        = 10
-	badge.TextColor3      = tc
-	badge.BackgroundColor3= C.surface
-	badge.BorderSizePixel = 0
-	badge.ZIndex          = 6
-	badge.TextXAlignment  = Enum.TextXAlignment.Center
-	badge.Parent          = topRow
-	corner(badge,4)
-
-	local nameLbl = Instance.new("TextLabel")
-	nameLbl.Size           = UDim2.new(1,-80,1,0)
-	nameLbl.Position       = UDim2.new(0,76,0,0)
-	nameLbl.Text           = name
-	nameLbl.Font           = Enum.Font.GothamBold
-	nameLbl.TextSize       = 13
-	nameLbl.TextColor3     = C.text
-	nameLbl.BackgroundTransparency=1
-	nameLbl.ZIndex         = 6
-	nameLbl.TextXAlignment = Enum.TextXAlignment.Left
-	nameLbl.TextTruncate   = Enum.TextTruncate.AtEnd
-	nameLbl.Parent         = topRow
-
-	local timeLbl = Instance.new("TextLabel")
-	timeLbl.Size           = UDim2.new(0,60,1,0)
-	timeLbl.Position       = UDim2.new(1,-62,0,0)
-	timeLbl.Text           = timestamp
-	timeLbl.Font           = Enum.Font.Code
-	timeLbl.TextSize       = 10
-	timeLbl.TextColor3     = C.muted
-	timeLbl.BackgroundTransparency=1
-	timeLbl.ZIndex         = 6
-	timeLbl.TextXAlignment = Enum.TextXAlignment.Right
-	timeLbl.Parent         = card
-
-	-- Path (collapsed by default, expand on tap)
-	local pathLbl = Instance.new("TextLabel")
-	pathLbl.Size           = UDim2.new(1,-20,0,0)
-	pathLbl.Position       = UDim2.new(0,10,0,32)
-	pathLbl.AutomaticSize  = Enum.AutomaticSize.Y
-	pathLbl.Text           = "📂 "..path
-	pathLbl.Font           = Enum.Font.Code
-	pathLbl.TextSize       = 10
-	pathLbl.TextColor3     = C.muted
-	pathLbl.BackgroundTransparency=1
-	pathLbl.ZIndex         = 5
-	pathLbl.TextXAlignment = Enum.TextXAlignment.Left
-	pathLbl.TextWrapped    = true
-	pathLbl.Parent         = card
-
-	-- Args text
-	local argsLbl = Instance.new("TextLabel")
-	argsLbl.Size           = UDim2.new(1,-20,0,0)
-	argsLbl.Position       = UDim2.new(0,10,0,52)
-	argsLbl.AutomaticSize  = Enum.AutomaticSize.Y
-	argsLbl.Text           = argsText
-	argsLbl.Font           = Enum.Font.Code
-	argsLbl.TextSize       = 12
-	argsLbl.TextColor3     = tc
-	argsLbl.BackgroundTransparency=1
-	argsLbl.ZIndex         = 5
-	argsLbl.TextXAlignment = Enum.TextXAlignment.Left
-	argsLbl.TextWrapped    = true
-	argsLbl.Parent         = card
-
-	-- Bottom padding
-	local bot = Instance.new("Frame")
-	bot.Size            = UDim2.new(1,0,0,36)
-	bot.Position        = UDim2.new(0,0,1,-36)
-	bot.BackgroundTransparency=1
-	bot.ZIndex          = 4
-	bot.Parent          = card
-
-	-- Action buttons (bottom-right)
-	local copyBtn   = makeBtn(card,"📋 Copy",   68, C.surface,  -32)
-	local scriptBtn = makeBtn(card,"📄 Script",  68, C.accent,  -32)
-	local blBtn     = makeBtn(card,"🚫 Block",   68, C.surface,  -32)
-	local delBtn    = makeBtn(card,"🗑",          28, C.red,      -32)
-
-	-- Reposition buttons horizontally
-	copyBtn.Position   = UDim2.new(1,-218,1,-30)
-	scriptBtn.Position = UDim2.new(1,-144,1,-30)
-	blBtn.Position     = UDim2.new(1,-70,1,-30)
-	delBtn.Position    = UDim2.new(1,-32,1,-30)
-	blBtn.Size         = UDim2.new(0,66,0,22)
-	copyBtn.Size       = UDim2.new(0,68,0,22)
-
-	-- ─ Button actions ─────────────────────────────────────
-	copyBtn.MouseButton1Click:Connect(function()
-		clip(fullText)
-		copyBtn.Text = "✓ Copied!"
-		task.delay(1.5, function()
-			if copyBtn.Parent then copyBtn.Text = "📋 Copy" end
-		end)
-	end)
-
-	scriptBtn.MouseButton1Click:Connect(function()
-		local sc = genScript(remote, args, rtype=="Function" and "RemoteFunction" or "RemoteEvent")
-		clip(sc)
-		scriptBtn.Text = "✓ Copied!"
-		task.delay(1.5, function()
-			if scriptBtn.Parent then scriptBtn.Text = "📄 Script" end
-		end)
-	end)
-
-	-- Block: add to blacklist so future fires from this remote are ignored
-	blBtn.MouseButton1Click:Connect(function()
-		blacklist[path] = not blacklist[path]
-		if blacklist[path] then
-			blBtn.Text = "✅ Blocked"
-			blBtn.BackgroundColor3 = C.red
-			card.BackgroundColor3 = Color3.fromRGB(40,20,20)
-		else
-			blBtn.Text = "🚫 Block"
-			blBtn.BackgroundColor3 = C.surface
-			card.BackgroundColor3 = C.card
-		end
-	end)
-
-	delBtn.MouseButton1Click:Connect(function()
-		tween(card, {BackgroundTransparency=1}, .15)
-		task.delay(.15, function()
-			logs[card] = nil
-			logCount = math.max(0,logCount-1)
-			updateCount()
-			card:Destroy()
-		end)
-	end)
-
-	logs[card] = {text=fullText, rtype=rtype, remote=remote, args=args}
-	applyFilter()
-
-	-- Scroll to bottom
-	task.defer(function()
-		scroll.CanvasPosition = Vector2.new(0, math.huge)
-	end)
-end
-
--- ── Toolbar actions ───────────────────────────────────────────────────────────
-pauseBtn.MouseButton1Click:Connect(function()
-	paused = not paused
-	pauseBtn.Text            = paused and "▶" or "⏸"
-	pauseBtn.TextColor3      = paused and C.green or C.yellow
-	pauseBtn.BackgroundColor3= paused and C.surface or C.surface
-end)
-
-clearBtn.MouseButton1Click:Connect(function()
-	for box in pairs(logs) do box:Destroy() end
-	table.clear(logs)
-	logCount = 0
-	updateCount()
-end)
-
-exportBtn.MouseButton1Click:Connect(function()
-	local lines = {"-- RemoteSpy Export | "..os.date("%Y-%m-%d %H:%M:%S"), ""}
-	for _, data in pairs(logs) do
-		lines[#lines+1] = "-- ["..data.rtype.."]"
-		lines[#lines+1] = data.text
-		lines[#lines+1] = ""
-	end
-	clip(table.concat(lines,"\n"))
-	exportBtn.Text = "✓ Exported!"
-	task.delay(2, function()
-		if exportBtn.Parent then exportBtn.Text = "📤 Export" end
-	end)
-end)
-
-minBtn.MouseButton1Click:Connect(function()
-	minimized = not minimized
-	if minimized then
-		savedH = main.Size.Y.Offset
-		tween(main, {Size=UDim2.new(0,PANEL_W,0,48)}, .2)
-		toolbar.Visible   = false
-		chipRow.Visible   = false
-		scroll.Visible    = false
-		minBtn.Text       = "+"
-	else
-		tween(main, {Size=UDim2.new(0,PANEL_W,0,savedH or PANEL_H)}, .2)
-		toolbar.Visible   = true
-		chipRow.Visible   = true
-		scroll.Visible    = true
-		minBtn.Text       = "–"
-	end
-end)
-
-closeBtn.MouseButton1Click:Connect(function()
-	tween(main, {BackgroundTransparency=1}, .2)
-	task.delay(.2, function() gui:Destroy() end)
-end)
-
--- ── Drag (mouse + touch) ──────────────────────────────────────────────────────
-do
-	local dragging, startInput, startPos
-
-	local function startDrag(pos)
-		dragging  = true
-		startInput= pos
-		startPos  = main.Position
-	end
-	local function doDrag(pos)
-		if not dragging then return end
-		local d = pos - startInput
-		local nx = math.clamp(startPos.X.Offset+d.X, 0, SW-main.AbsoluteSize.X)
-		local ny = math.clamp(startPos.Y.Offset+d.Y, 0, SH-main.AbsoluteSize.Y)
-		main.Position = UDim2.new(0,nx,0,ny)
-	end
-
-	header.InputBegan:Connect(function(i)
-		if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-			startDrag(i.Position)
+	local resizing, rStart, sSize
+	grip.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 then
+			resizing = true
+			rStart = i.Position
+			sSize = main.AbsoluteSize
 		end
 	end)
 	UIS.InputChanged:Connect(function(i)
-		if i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch then
-			doDrag(i.Position)
+		if resizing and i.UserInputType == Enum.UserInputType.MouseMovement then
+			local d = i.Position - rStart
+			local w = math.max(MIN_W, sSize.X + d.X)
+			local h = math.max(MIN_H, sSize.Y + d.Y)
+			main.Size = UDim2.new(0, w, 0, h)
 		end
 	end)
 	UIS.InputEnded:Connect(function(i)
-		if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-			dragging=false
+		if i.UserInputType == Enum.UserInputType.MouseButton1 then resizing = false end
+	end)
+end
+
+-- ================================================================
+-- STATE & LOGIC
+-- ================================================================
+
+local logs          = {}   -- unique key -> {box, data}
+local order         = 0
+local paused        = false
+local blocked       = {}   -- fullName -> true
+local minimized     = false
+local originalSize  = main.Size
+
+-- Pretty-format a single arg
+local function reprArg(v)
+	local t = typeof(v)
+	if t == "string" then
+		return string.format('%q', v)
+	elseif t == "number" or t == "boolean" or t == "nil" then
+		return tostring(v)
+	elseif t == "Instance" then
+		return string.format('game:GetService("%s")%s',
+			v:FindFirstAncestorOfClass("DataModel") and v:GetFullName():match("^(%w+)") or "Workspace",
+			"")
+	elseif t == "Vector3" then
+		return string.format("Vector3.new(%s,%s,%s)", v.X, v.Y, v.Z)
+	elseif t == "Vector2" then
+		return string.format("Vector2.new(%s,%s)", v.X, v.Y)
+	elseif t == "CFrame" then
+		return "CFrame.new(" .. tostring(v) .. ")"
+	elseif t == "Color3" then
+		return string.format("Color3.fromRGB(%d,%d,%d)", v.R*255, v.G*255, v.B*255)
+	elseif t == "table" then
+		local parts = {}
+		for k, val in pairs(v) do
+			parts[#parts+1] = "["..tostring(k).."]="..reprArg(val)
+		end
+		return "{" .. table.concat(parts, ", ") .. "}"
+	end
+	return "<"..t..">"
+end
+
+local function formatArgs(args)
+	local t = {}
+	for i = 1, #args do t[i] = reprArg(args[i]) end
+	return table.concat(t, ", ")
+end
+
+-- Build reproduction script for a remote call
+local function buildCallScript(remote, args, dir)
+	local path = remote:GetFullName()
+	local argStr = formatArgs(args)
+	local method
+	if remote:IsA("RemoteEvent") then
+		method = (dir == "Outgoing") and "FireServer" or "-- (incoming event, cannot re-fire from client)"
+	elseif remote:IsA("RemoteFunction") then
+		method = "InvokeServer"
+	elseif remote:IsA("BindableEvent") then
+		method = "Fire"
+	elseif remote:IsA("BindableFunction") then
+		method = "Invoke"
+	else
+		method = "Fire"
+	end
+	if method:sub(1,2) == "--" then
+		return ("-- Source: %s\n-- %s"):format(path, method)
+	end
+	return ("local r = %s\nr:%s(%s)"):format(path, method, argStr)
+end
+
+-- ---------- FILTERS ----------
+function applyFilters()
+	local q = string.lower(search.Text)
+	local visible = 0
+	for _, entry in pairs(logs) do
+		local d = entry.data
+		local matchTab = (currentTab == "All") or (currentTab == d.direction)
+		local matchText = (q == "") or string.find(string.lower(d.searchBlob), q, 1, true) ~= nil
+		local show = matchTab and matchText
+		entry.box.Visible = show
+		if show then visible += 1 end
+	end
+	status.Text = string.format("%d logs%s  •  %s", visible, paused and " (paused)" or "", paused and "paused" or "logging")
+end
+
+search:GetPropertyChangedSignal("Text"):Connect(applyFilters)
+
+-- ---------- CREATE / UPDATE LOG ENTRY ----------
+local function createOrUpdateLog(remote, args, direction)
+	if paused then return end
+	if blocked[remote:GetFullName()] then return end
+
+	local key = remote:GetFullName() .. "|" .. direction
+	local existing = logs[key]
+
+	local argText = formatArgs(args)
+	local fullText = ("[%s] %s\n→ %s"):format(direction, remote:GetFullName(), argText)
+
+	-- If exact same call exists, bump counter
+	if existing and existing.data.argText == argText then
+		existing.data.count += 1
+		existing.countLabel.Text = "x" .. existing.data.count
+		existing.countLabel.Visible = true
+		return
+	end
+
+	-- If same remote/direction but new args, create new entry (so history is preserved)
+	order -= 1
+
+	local box = Instance.new("Frame")
+	box.Size = UDim2.new(1, -4, 0, 0)
+	box.AutomaticSize = Enum.AutomaticSize.Y
+	box.BackgroundColor3 = C.panel
+	box.BorderSizePixel = 0
+	box.LayoutOrder = order
+	box.Parent = scroll
+	corner(box, 8)
+	stroke(box, C.panel2, 1)
+
+	-- direction badge color
+	local badgeColor = (direction == "Outgoing") and C.warn or C.good
+
+	local badge = Instance.new("Frame")
+	badge.Size = UDim2.new(0, 4, 1, -12)
+	badge.Position = UDim2.new(0, 6, 0, 6)
+	badge.BackgroundColor3 = badgeColor
+	badge.BorderSizePixel = 0
+	badge.Parent = box
+	corner(badge, 2)
+
+	local pathLabel = Instance.new("TextLabel")
+	pathLabel.Size = UDim2.new(1, -150, 0, 16)
+	pathLabel.Position = UDim2.new(0, 18, 0, 8)
+	pathLabel.BackgroundTransparency = 1
+	pathLabel.Font = Enum.Font.GothamBold
+	pathLabel.TextSize = 13
+	pathLabel.TextColor3 = badgeColor
+	pathLabel.TextXAlignment = Enum.TextXAlignment.Left
+	pathLabel.Text = ("[%s] %s"):format(direction:upper(), remote:GetFullName())
+	pathLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	pathLabel.Parent = box
+
+	local argsLabel = Instance.new("TextLabel")
+	argsLabel.Size = UDim2.new(1, -150, 0, 0)
+	argsLabel.AutomaticSize = Enum.AutomaticSize.Y
+	argsLabel.Position = UDim2.new(0, 18, 0, 26)
+	argsLabel.BackgroundTransparency = 1
+	argsLabel.Font = Enum.Font.Code
+	argsLabel.TextSize = 13
+	argsLabel.TextColor3 = C.text
+	argsLabel.TextXAlignment = Enum.TextXAlignment.Left
+	argsLabel.TextYAlignment = Enum.TextYAlignment.Top
+	argsLabel.TextWrapped = true
+	argsLabel.Text = "→ " .. argText
+	argsLabel.Parent = box
+
+	-- spacer at the bottom
+	local spacer = Instance.new("Frame")
+	spacer.Size = UDim2.new(1, 0, 0, 10)
+	spacer.Position = UDim2.new(0, 0, 1, 0)
+	spacer.BackgroundTransparency = 1
+	spacer.Parent = box
+
+	-- call count badge
+	local countLabel = Instance.new("TextLabel")
+	countLabel.Size = UDim2.new(0, 40, 0, 18)
+	countLabel.Position = UDim2.new(1, -134, 0, 8)
+	countLabel.BackgroundColor3 = C.panel2
+	countLabel.TextColor3 = C.text
+	countLabel.Font = Enum.Font.GothamBold
+	countLabel.TextSize = 12
+	countLabel.Text = "x1"
+	countLabel.Visible = false
+	countLabel.Parent = box
+	corner(countLabel, 4)
+
+	-- action buttons (stacked for mobile friendliness)
+	local function rowBtn(txt, idx, color)
+		local b = Instance.new("TextButton")
+		b.Size = UDim2.new(0, 86, 0, 22)
+		b.Position = UDim2.new(1, -92, 0, 8 + (idx - 1) * 26)
+		b.Text = txt
+		b.Font = Enum.Font.GothamBold
+		b.TextSize = 11
+		b.TextColor3 = C.text
+		b.BackgroundColor3 = color or C.panel2
+		b.BorderSizePixel = 0
+		b.AutoButtonColor = true
+		b.Parent = box
+		corner(b, 5)
+		return b
+	end
+
+	local copyBtn  = rowBtn("COPY",     1, C.panel2)
+	local genBtn   = rowBtn("GEN SCRIPT", 2, C.accent)
+	local blockBtn = rowBtn("BLOCK",    3, C.warn)
+	local delBtn   = rowBtn("DELETE",   4, C.bad)
+
+	copyBtn.MouseButton1Click:Connect(function()
+		setclipboard(fullText)
+		copyBtn.Text = "COPIED!"
+		task.delay(1, function() if copyBtn.Parent then copyBtn.Text = "COPY" end end)
+	end)
+
+	genBtn.MouseButton1Click:Connect(function()
+		local s = buildCallScript(remote, args, direction)
+		setclipboard(s)
+		genBtn.Text = "COPIED!"
+		task.delay(1, function() if genBtn.Parent then genBtn.Text = "GEN SCRIPT" end end)
+	end)
+
+	blockBtn.MouseButton1Click:Connect(function()
+		blocked[remote:GetFullName()] = true
+		-- remove all entries for this remote path
+		for k, entry in pairs(logs) do
+			if entry.data.path == remote:GetFullName() then
+				entry.box:Destroy()
+				logs[k] = nil
+			end
+		end
+		applyFilters()
+	end)
+
+	delBtn.MouseButton1Click:Connect(function()
+		logs[key] = nil
+		box:Destroy()
+		applyFilters()
+	end)
+
+	logs[key] = {
+		box = box,
+		countLabel = countLabel,
+		data = {
+			path = remote:GetFullName(),
+			direction = direction,
+			argText = argText,
+			searchBlob = fullText,
+			count = 1,
+		},
+	}
+	applyFilters()
+end
+
+-- ================================================================
+-- TOOLBAR ACTIONS
+-- ================================================================
+
+btnPause.MouseButton1Click:Connect(function()
+	paused = not paused
+	btnPause.Text = paused and "RESUME" or "PAUSE"
+	btnPause.BackgroundColor3 = paused and C.good or C.panel2
+	applyFilters()
+end)
+
+btnClear.MouseButton1Click:Connect(function()
+	for k, entry in pairs(logs) do entry.box:Destroy() end
+	table.clear(logs)
+	applyFilters()
+end)
+
+btnExport.MouseButton1Click:Connect(function()
+	local parts = {}
+	for _, entry in pairs(logs) do
+		parts[#parts+1] = entry.data.searchBlob
+	end
+	setclipboard(table.concat(parts, "\n\n"))
+	btnExport.Text = "COPIED!"
+	task.delay(1, function() btnExport.Text = "EXPORT" end)
+end)
+
+-- ================================================================
+-- MINIMIZE / CLOSE / TOGGLE
+-- ================================================================
+
+local function hideBody(hidden)
+	tabBar.Visible   = not hidden
+	toolbar.Visible  = not hidden
+	status.Visible   = not hidden
+	scroll.Visible   = not hidden
+end
+
+btnMin.MouseButton1Click:Connect(function()
+	minimized = not minimized
+	if minimized then
+		originalSize = main.Size
+		main.Size = UDim2.new(main.Size.X.Scale, main.Size.X.Offset, 0, 40)
+		btnMin.Text = "+"
+		hideBody(true)
+	else
+		main.Size = originalSize
+		btnMin.Text = "–"
+		hideBody(false)
+	end
+end)
+
+-- ---------- FLOATING TOGGLE BUTTON ----------
+local toggleGui = Instance.new("ScreenGui")
+toggleGui.Name = "RemoteLoggerToggle"
+toggleGui.ResetOnSpawn = false
+toggleGui.IgnoreGuiInset = true
+toggleGui.Parent = pg
+
+local toggleBtn = Instance.new("TextButton")
+toggleBtn.Size = UDim2.new(0, 46, 0, 46)
+toggleBtn.AnchorPoint = Vector2.new(0, 0)
+toggleBtn.Position = UDim2.new(0, 12, 0, 80)
+toggleBtn.Text = "RS"
+toggleBtn.Font = Enum.Font.GothamBold
+toggleBtn.TextSize = 16
+toggleBtn.TextColor3 = C.text
+toggleBtn.BackgroundColor3 = C.accent
+toggleBtn.BorderSizePixel = 0
+toggleBtn.AutoButtonColor = true
+toggleBtn.Parent = toggleGui
+corner(toggleBtn, 23)
+stroke(toggleBtn, Color3.fromRGB(255,255,255), 1).Transparency = 0.7
+
+-- Make the floating button draggable too
+do
+	local dragging, dStart, sPos
+	toggleBtn.InputBegan:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = true; dStart = i.Position; sPos = toggleBtn.Position
+		end
+	end)
+	toggleBtn.InputChanged:Connect(function(i)
+		if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+			local d = i.Position - dStart
+			toggleBtn.Position = UDim2.new(sPos.X.Scale, sPos.X.Offset + d.X, sPos.Y.Scale, sPos.Y.Offset + d.Y)
+		end
+	end)
+	UIS.InputEnded:Connect(function(i)
+		if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
 		end
 	end)
 end
 
--- ── Remote hooker ─────────────────────────────────────────────────────────────
-local hooked = {}
-
-local function hookRemote(obj)
-	if hooked[obj] then return end
-
-	if obj:IsA("RemoteEvent") then
-		hooked[obj] = true
-		obj.OnClientEvent:Connect(function(...)
-			local path = pcall(function() return obj:GetFullName() end) and obj:GetFullName() or "?"
-			if paused or blacklist[path] then return end
-			createLog(obj, {...}, "Event")
-		end)
-
-	elseif obj:IsA("RemoteFunction") then
-		hooked[obj] = true
-		local orig = obj.OnClientInvoke
-		obj.OnClientInvoke = function(...)
-			local path = pcall(function() return obj:GetFullName() end) and obj:GetFullName() or "?"
-			if not paused and not blacklist[path] then
-				createLog(obj, {...}, "Function")
-			end
-			if orig then return orig(...) end
-		end
-	end
+local function toggleMain()
+	main.Visible = not main.Visible
 end
 
-for _, d in ipairs(game:GetDescendants()) do pcall(hookRemote, d) end
-game.DescendantAdded:Connect(function(d)
-	task.wait()
-	pcall(hookRemote, d)
+toggleBtn.MouseButton1Click:Connect(toggleMain)
+
+btnClose.MouseButton1Click:Connect(function()
+	main.Visible = false
 end)
 
--- Keep viewport responsive when screen rotates (mobile)
+-- Keybind (RightShift) on PC
+UIS.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.RightShift then
+		toggleMain()
+	end
+end)
+
+-- ================================================================
+-- REMOTE HOOKS
+-- ================================================================
+
+-- Incoming hooks (OnClientEvent / OnClientInvoke)
+local hooked = setmetatable({}, {__mode = "k"})
+local function hookIncoming(obj)
+	if hooked[obj] then return end
+	hooked[obj] = true
+	if obj:IsA("RemoteEvent") then
+		obj.OnClientEvent:Connect(function(...)
+			createOrUpdateLog(obj, {...}, "Incoming")
+		end)
+	end
+	-- NOTE: OnClientInvoke can only have a single assignment; we don't override it here
+	-- to avoid breaking the game. Outgoing Invoke is still captured via namecall hook.
+end
+
+for _, d in ipairs(game:GetDescendants()) do hookIncoming(d) end
+game.DescendantAdded:Connect(hookIncoming)
+
+-- Outgoing hooks via metatable (FireServer / InvokeServer)
+local okHook = pcall(function()
+	if not hookmetamethod then error("no hookmetamethod") end
+	local oldNamecall
+	oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+		local method = getnamecallmethod and getnamecallmethod() or ""
+		if not checkcaller() and (method == "FireServer" or method == "InvokeServer") then
+			if typeof(self) == "Instance" and (self:IsA("RemoteEvent") or self:IsA("RemoteFunction")) then
+				createOrUpdateLog(self, {...}, "Outgoing")
+			end
+		end
+		return oldNamecall(self, ...)
+	end)
+end)
+
+if not okHook then
+	-- Fallback: wrap FireServer / InvokeServer per-remote (less reliable but works on some executors)
+	local function wrapOutgoing(obj)
+		if obj:IsA("RemoteEvent") then
+			local orig = obj.FireServer
+			obj.FireServer = function(self, ...)
+				createOrUpdateLog(self, {...}, "Outgoing")
+				return orig(self, ...)
+			end
+		elseif obj:IsA("RemoteFunction") then
+			local orig = obj.InvokeServer
+			obj.InvokeServer = function(self, ...)
+				createOrUpdateLog(self, {...}, "Outgoing")
+				return orig(self, ...)
+			end
+		end
+	end
+	for _, d in ipairs(game:GetDescendants()) do pcall(wrapOutgoing, d) end
+	game.DescendantAdded:Connect(function(d) pcall(wrapOutgoing, d) end)
+end
+
+-- ================================================================
+-- VIEWPORT CHANGE (rotate / resize)
+-- ================================================================
 camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-	VP=camera.ViewportSize; SW=VP.X; SH=VP.Y
+	local vp = camera.ViewportSize
+	if vp.X < 700 then
+		main.Size = UDim2.new(0.95, 0, 0.8, 0)
+	else
+		if not minimized then
+			main.Size = UDim2.new(0, math.clamp(vp.X * 0.5, 420, 720), 0, math.clamp(vp.Y * 0.65, 360, 560))
+			originalSize = main.Size
+		end
+	end
 end)
 
-print("[RemoteSpy v2] Ready. Hooked "..#game:GetDescendants().." descendants.")
-print("[RemoteSpy v2] 📄 Script button = paste-ready FireServer/InvokeServer script")
-print("[RemoteSpy v2] 🚫 Block button  = ignore that remote from now on")
-print("[RemoteSpy v2] 📤 Export button = copy ALL logs to clipboard")
+applyFilters()
+print("[RemoteSpy] loaded  •  RightShift to toggle  •  floating RS button works on mobile")
