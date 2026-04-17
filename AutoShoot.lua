@@ -1,443 +1,252 @@
--- ================================================================
--- Auto Shoot Zombie Script (WindUI)
--- Based on RemoteSpy captured remotes:
---   * Character.Torso.AimRotate.ReplicateAim:FireServer(aimValue)
---   * Character[Weapon].Shoot:FireServer(originPos, hitDataTable)
---
--- Features:
---   * Auto Shoot Zombies (workspace.Characters)
---   * Range/Aura slider (studs)
---   * Fire Rate slider (shots per second)
---   * Target Part selector (Head / Torso / HumanoidRootPart)
---   * Wallbang toggle (ignore line-of-sight)
---   * Prioritize closest / lowest HP
---   * Auto detect equipped weapon
---   * Visual range circle (optional)
--- ================================================================
-
--- ---------- LOAD WINDUI ----------
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
--- ---------- SERVICES ----------
-local Players      = game:GetService("Players")
-local RunService   = game:GetService("RunService")
-local Workspace    = game:GetService("Workspace")
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local Workspace        = game:GetService("Workspace")
 
-local LocalPlayer  = Players.LocalPlayer
+local LocalPlayer      = Players.LocalPlayer
+local CharactersFolder = Workspace:WaitForChild("Characters")
 
--- ---------- STATE ----------
 local State = {
-    AutoShoot      = false,
-    Range          = 500,
-    FireRate       = 15,       -- shots per second
-    TargetPart     = "Head",   -- Head / Torso / HumanoidRootPart
-    Priority       = "Closest",-- Closest / LowestHP
-    Wallbang       = true,
-    ShowRange      = false,
-    SilentAim      = true,     -- fires ReplicateAim for minimal aim value
+    AutoShoot   = false,
+    Range       = 200,
+    FireRate    = 0.1,
+    AutoReload  = false,
 }
 
--- ---------- HELPERS ----------
-local function getCharacter()
-    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local SupportedTypes = {
+    Zombie  = true,
+    Crawler = true,
+    Runner  = true,
+}
+
+local vector_create   = vector.create
+local table_insert    = table.insert
+local math_huge       = math.huge
+local os_clock        = os.clock
+
+local CachedTool, CachedShoot, CachedReload = nil, nil, nil
+
+local function invalidateWeapon()
+    CachedTool, CachedShoot, CachedReload = nil, nil, nil
 end
 
-local function getRoot()
-    local char = getCharacter()
-    return char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
-end
+local function resolveWeapon()
+    if CachedTool and CachedTool.Parent and CachedTool.Parent == LocalPlayer.Character then
+        return CachedTool, CachedShoot, CachedReload
+    end
 
-local function getEquippedWeapon()
-    local char = getCharacter()
+    invalidateWeapon()
+
+    local char = LocalPlayer.Character
     if not char then return nil end
-    -- Scan character for a child with a "Shoot" RemoteEvent
-    for _, child in ipairs(char:GetChildren()) do
-        if child:IsA("Model") or child:IsA("Tool") or child:IsA("Folder") then
-            local shoot = child:FindFirstChild("Shoot")
-            if shoot and shoot:IsA("RemoteEvent") then
-                return child, shoot
+
+    for _, tool in ipairs(char:GetChildren()) do
+        if tool:IsA("Tool") then
+            local shoot  = tool:FindFirstChild("Shoot")
+            local reload = tool:FindFirstChild("Reload")
+            if shoot or reload then
+                CachedTool, CachedShoot, CachedReload = tool, shoot, reload
+                return tool, shoot, reload
             end
         end
     end
-    return nil, nil
+
+    return nil
 end
 
-local function getAimRemote()
-    local char = getCharacter()
-    if not char then return nil end
-    local torso = char:FindFirstChild("Torso")
-    if not torso then return nil end
-    local aimRotate = torso:FindFirstChild("AimRotate")
-    if not aimRotate then return nil end
-    return aimRotate:FindFirstChild("ReplicateAim")
+local function hookCharacter(char)
+    invalidateWeapon()
+    if not char then return end
+    char.ChildAdded:Connect(function(c)
+        if c:IsA("Tool") then invalidateWeapon() end
+    end)
+    char.ChildRemoved:Connect(function(c)
+        if c == CachedTool then invalidateWeapon() end
+    end)
 end
 
-local function getZombiesFolder()
-    return Workspace:FindFirstChild("Characters")
-end
+hookCharacter(LocalPlayer.Character)
+LocalPlayer.CharacterAdded:Connect(hookCharacter)
+LocalPlayer.CharacterRemoving:Connect(invalidateWeapon)
 
-local function isAlive(zombie)
-    if not zombie or not zombie.Parent then return false end
-    local hum = zombie:FindFirstChildOfClass("Humanoid")
-    if hum and hum.Health <= 0 then return false end
-    -- Some zombie models may not have Humanoid, fallback to Head existence
-    return zombie:FindFirstChild("Head") ~= nil
-end
+local function getClosestTarget(originPos, rangeSq)
+    local closestChar, closestHead, closestDistSq = nil, nil, math_huge
 
-local function hasLineOfSight(fromPos, targetPart)
-    if State.Wallbang then return true end
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = { getCharacter() }
-    local dir = (targetPart.Position - fromPos)
-    local result = Workspace:Raycast(fromPos, dir, params)
-    if not result then return true end
-    -- Make sure the hit is within the target model
-    return result.Instance and result.Instance:IsDescendantOf(targetPart.Parent)
-end
-
-local function getTargetPart(zombie)
-    local part = zombie:FindFirstChild(State.TargetPart)
-    if part then return part end
-    -- Fallback chain
-    return zombie:FindFirstChild("Head")
-        or zombie:FindFirstChild("Torso")
-        or zombie:FindFirstChild("HumanoidRootPart")
-        or zombie.PrimaryPart
-end
-
-local function findBestTarget()
-    local folder = getZombiesFolder()
-    if not folder then return nil end
-    local root = getRoot()
-    if not root then return nil end
-    local originPos = root.Position
-
-    local best, bestScore
-    for _, zombie in ipairs(folder:GetChildren()) do
-        if isAlive(zombie) then
-            local part = getTargetPart(zombie)
-            if part then
-                local dist = (part.Position - originPos).Magnitude
-                if dist <= State.Range and hasLineOfSight(originPos, part) then
-                    local score
-                    if State.Priority == "LowestHP" then
-                        local hum = zombie:FindFirstChildOfClass("Humanoid")
-                        score = hum and hum.Health or dist
-                    else
-                        score = dist
-                    end
-                    if not bestScore or score < bestScore then
-                        best, bestScore = zombie, score
+    for _, model in ipairs(CharactersFolder:GetChildren()) do
+        if SupportedTypes[model.Name] then
+            local head = model:FindFirstChild("Head")
+            if head then
+                local hum = model:FindFirstChildOfClass("Humanoid")
+                if not hum or hum.Health > 0 then
+                    local diff = head.Position - originPos
+                    local dSq = diff.X*diff.X + diff.Y*diff.Y + diff.Z*diff.Z
+                    if dSq <= rangeSq and dSq < closestDistSq then
+                        closestDistSq = dSq
+                        closestChar   = model
+                        closestHead   = head
                     end
                 end
             end
         end
     end
-    return best
+
+    return closestChar, closestHead
 end
 
--- ---------- SHOOT LOGIC ----------
-local function fireAim()
-    if not State.SilentAim then return end
-    local aimRemote = getAimRemote()
-    if aimRemote then
-        pcall(function()
-            aimRemote:FireServer(0.02490769699215889)
-        end)
-    end
-end
-
-local function fireShot(zombie)
-    local weapon, shootRemote = getEquippedWeapon()
-    if not weapon or not shootRemote then return false end
-    local root = getRoot()
-    if not root then return false end
-    local targetPart = getTargetPart(zombie)
-    if not targetPart then return false end
-
-    local originPos = root.Position
-    local hitPos    = targetPart.Position
-
+local function fireShot(shootRemote, originPos, targetChar, targetHead)
+    local hitPos = targetHead.Position
     local args = {
-        originPos,
+        vector_create(originPos.X, originPos.Y, originPos.Z),
         {
             {
-                Target = hitPos,
+                Target  = vector_create(hitPos.X, hitPos.Y, hitPos.Z),
                 HitData = {
                     {
-                        HitChar = zombie,
-                        HitPos  = hitPos,
-                        HitPart = targetPart,
-                    },
-                },
-            },
-        },
+                        HitChar = targetChar,
+                        HitPos  = vector_create(hitPos.X, hitPos.Y, hitPos.Z),
+                        HitPart = targetHead,
+                    }
+                }
+            }
+        }
     }
-
-    local ok = pcall(function()
+    pcall(function()
         shootRemote:FireServer(unpack(args))
     end)
-    return ok
 end
 
--- ---------- LOOP ----------
-local lastShot = 0
+local function tryGetAmmo(tool)
+    if not tool then return nil end
+    local a = tool:GetAttribute("Ammo")
+            or tool:GetAttribute("Mag")
+            or tool:GetAttribute("Magazine")
+            or tool:GetAttribute("Bullets")
+    if a then return a end
+    local v = tool:FindFirstChild("Ammo")
+           or tool:FindFirstChild("Mag")
+           or tool:FindFirstChild("Bullets")
+    if v and (v:IsA("IntValue") or v:IsA("NumberValue")) then
+        return v.Value
+    end
+    return nil
+end
+
+local Reloading = false
+local function doReload(reloadRemote)
+    if Reloading or not reloadRemote then return end
+    Reloading = true
+    task.spawn(function()
+        pcall(function()
+            reloadRemote:InvokeServer()
+        end)
+        task.wait(0.15)
+        Reloading = false
+    end)
+end
+
+local lastFire = 0
+
 RunService.Heartbeat:Connect(function()
     if not State.AutoShoot then return end
-    local now = tick()
-    local interval = 1 / math.max(State.FireRate, 0.1)
-    if now - lastShot < interval then return end
 
-    local target = findBestTarget()
-    if target then
-        fireAim()
-        if fireShot(target) then
-            lastShot = now
-        end
+    local now = os_clock()
+    if now - lastFire < State.FireRate then return end
+
+    local tool, shoot, _ = resolveWeapon()
+    if not tool or not shoot then return end
+
+    local char = LocalPlayer.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local rangeSq = State.Range * State.Range
+    local targetChar, targetHead = getClosestTarget(hrp.Position, rangeSq)
+    if targetChar and targetHead then
+        lastFire = now
+        fireShot(shoot, hrp.Position, targetChar, targetHead)
     end
 end)
 
--- ---------- RANGE VISUAL ----------
-local rangePart
-local function updateRangeVisual()
-    if State.ShowRange then
-        if not rangePart then
-            rangePart = Instance.new("Part")
-            rangePart.Name = "AutoShootRange"
-            rangePart.Shape = Enum.PartType.Ball
-            rangePart.Material = Enum.Material.ForceField
-            rangePart.Color = Color3.fromRGB(0, 170, 255)
-            rangePart.Transparency = 0.85
-            rangePart.CanCollide = false
-            rangePart.CanQuery = false
-            rangePart.CanTouch = false
-            rangePart.Anchored = true
-            rangePart.Parent = Workspace
-        end
-        rangePart.Size = Vector3.new(State.Range * 2, State.Range * 2, State.Range * 2)
-    else
-        if rangePart then
-            rangePart:Destroy()
-            rangePart = nil
-        end
-    end
-end
-
-RunService.RenderStepped:Connect(function()
-    if rangePart then
-        local root = getRoot()
-        if root then
-            rangePart.CFrame = CFrame.new(root.Position)
-        end
-    end
-end)
-
--- ================================================================
--- WINDUI INTERFACE
--- ================================================================
-
-local Window = WindUI:CreateWindow({
-    Title  = "Zombie Hub",
-    Icon   = "crosshair",
-    Author = "Auto Shoot v1.0",
-    Folder = "ZombieHub",
-    Size   = UDim2.fromOffset(560, 420),
-    Theme  = "Dark",
-    Resizable  = true,
-    ToggleKey  = Enum.KeyCode.RightShift,
-    SideBarWidth = 180,
-})
-
--- ---------- MAIN TAB ----------
-local MainTab = Window:Tab({
-    Title = "Combat",
-    Icon  = "target",
-})
-
-local CombatSection = MainTab:Section({
-    Title = "Auto Shoot",
-    TextSize = 17,
-})
-
-MainTab:Toggle({
-    Title = "Auto Shoot Zombies",
-    Desc  = "Automatically shoots zombies within range",
-    Value = false,
-    Callback = function(state)
-        State.AutoShoot = state
-    end,
-})
-
-MainTab:Toggle({
-    Title = "Silent Aim",
-    Desc  = "Fires ReplicateAim to bypass aim checks",
-    Value = true,
-    Callback = function(state)
-        State.SilentAim = state
-    end,
-})
-
-MainTab:Toggle({
-    Title = "Wallbang",
-    Desc  = "Ignore walls / line-of-sight",
-    Value = true,
-    Callback = function(state)
-        State.Wallbang = state
-    end,
-})
-
-MainTab:Slider({
-    Title = "Range (Aura)",
-    Desc  = "Maximum distance in studs",
-    Step  = 5,
-    Value = { Min = 20, Max = 2000, Default = 500 },
-    Callback = function(value)
-        State.Range = value
-        if rangePart then
-            rangePart.Size = Vector3.new(value * 2, value * 2, value * 2)
-        end
-    end,
-})
-
-MainTab:Slider({
-    Title = "Fire Rate",
-    Desc  = "Shots per second",
-    Step  = 1,
-    Value = { Min = 1, Max = 60, Default = 15 },
-    Callback = function(value)
-        State.FireRate = value
-    end,
-})
-
-MainTab:Dropdown({
-    Title = "Target Part",
-    Desc  = "Preferred body part to hit",
-    Values = { "Head", "Torso", "HumanoidRootPart" },
-    Value  = "Head",
-    Callback = function(value)
-        State.TargetPart = value
-    end,
-})
-
-MainTab:Dropdown({
-    Title = "Target Priority",
-    Desc  = "How to choose among zombies in range",
-    Values = { "Closest", "LowestHP" },
-    Value  = "Closest",
-    Callback = function(value)
-        State.Priority = value
-    end,
-})
-
--- ---------- VISUALS TAB ----------
-local VisualTab = Window:Tab({
-    Title = "Visuals",
-    Icon  = "eye",
-})
-
-VisualTab:Toggle({
-    Title = "Show Range Sphere",
-    Desc  = "Displays a sphere showing aura range",
-    Value = false,
-    Callback = function(state)
-        State.ShowRange = state
-        updateRangeVisual()
-    end,
-})
-
-VisualTab:Button({
-    Title = "Highlight Zombies",
-    Desc  = "Add highlight to all zombies in workspace.Characters",
-    Callback = function()
-        local folder = getZombiesFolder()
-        if not folder then return end
-        for _, zombie in ipairs(folder:GetChildren()) do
-            if zombie:IsA("Model") and not zombie:FindFirstChild("AutoShootHL") then
-                local hl = Instance.new("Highlight")
-                hl.Name = "AutoShootHL"
-                hl.FillColor = Color3.fromRGB(255, 60, 60)
-                hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-                hl.FillTransparency = 0.6
-                hl.Parent = zombie
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+        if State.AutoReload and not Reloading then
+            local tool, _, reload = resolveWeapon()
+            if tool and reload then
+                local ammo = tryGetAmmo(tool)
+                if ammo == nil then
+                    doReload(reload)
+                    task.wait(1.25)
+                elseif ammo <= 0 then
+                    doReload(reload)
+                end
             end
         end
-    end,
+    end
+end)
+
+local Window = WindUI:CreateWindow({
+    Title        = "STA Hub",
+    Icon         = "crosshair",
+    Author       = "Kaizen",
+    Folder       = "STA Hub",
+    Size         = UDim2.fromOffset(560, 380),
+    Transparent  = true,
+    Theme        = "Dark",
+    SideBarWidth = 180,
+    HasOutline   = true,
 })
 
-VisualTab:Button({
-    Title = "Remove Highlights",
-    Callback = function()
-        local folder = getZombiesFolder()
-        if not folder then return end
-        for _, zombie in ipairs(folder:GetChildren()) do
-            local hl = zombie:FindFirstChild("AutoShootHL")
-            if hl then hl:Destroy() end
-        end
-    end,
+local TabRanged = Window:Tab({
+    Title = "STA Hub",
+    Icon  = "crosshair",
 })
 
--- ---------- INFO TAB ----------
-local InfoTab = Window:Tab({
-    Title = "Info",
+TabRanged:Toggle({
+    Title    = "Ranged Aura",
+    Desc     = "Auto shoots the closest supported enemy in range",
+    Icon     = "target",
+    Value    = false,
+    Callback = function(v) State.AutoShoot = v end,
+})
+
+TabRanged:Slider({
+    Title    = "Range",
+    Desc     = "Maximum distance to engage targets",
+    Icon     = "radar",
+    Value    = { Min = 10, Max = 200, Default = 200 },
+    Step     = 1,
+    Callback = function(v) State.Range = tonumber(v) or 200 end,
+})
+
+TabRanged:Slider({
+    Title    = "Fire Rate",
+    Desc     = "Seconds between server fires",
+    Icon     = "zap",
+    Value    = { Min = 0.1, Max = 0.5, Default = 0.1 },
+    Step     = 0.01,
+    Rounding = 2,
+    Callback = function(v) State.FireRate = tonumber(v) or 0.1 end,
+})
+
+TabRanged:Paragraph({
+    Title = "Note",
+    Desc  = "Fire Rate - the rate at which events are sent to the server",
     Icon  = "info",
 })
 
-InfoTab:Paragraph({
-    Title = "How it works",
-    Desc  = "Fires the same remotes captured by RemoteSpy:\n"
-         .. "1) Character.Torso.AimRotate.ReplicateAim\n"
-         .. "2) Character[Weapon].Shoot\n\n"
-         .. "Make sure a weapon (e.g. AK-47) is equipped.",
+TabRanged:Toggle({
+    Title    = "Auto Reload",
+    Desc     = "Syncs ammo and reloads instantly when empty",
+    Icon     = "refresh-cw",
+    Value    = false,
+    Callback = function(v) State.AutoReload = v end,
 })
-
-InfoTab:Paragraph({
-    Title = "Toggle UI",
-    Desc  = "Press RightShift to show/hide this window.",
-})
-
-InfoTab:Button({
-    Title = "Debug: Print Equipped Weapon",
-    Callback = function()
-        local weapon = getEquippedWeapon()
-        if weapon then
-            WindUI:Notify({
-                Title = "Weapon Found",
-                Content = weapon.Name,
-                Duration = 4,
-            })
-        else
-            WindUI:Notify({
-                Title = "No Weapon",
-                Content = "Equip a weapon first.",
-                Duration = 4,
-            })
-        end
-    end,
-})
-
-InfoTab:Button({
-    Title = "Debug: Count Zombies",
-    Callback = function()
-        local folder = getZombiesFolder()
-        local count = 0
-        if folder then
-            for _, z in ipairs(folder:GetChildren()) do
-                if isAlive(z) then count = count + 1 end
-            end
-        end
-        WindUI:Notify({
-            Title = "Zombies Alive",
-            Content = tostring(count),
-            Duration = 4,
-        })
-    end,
-})
-
-MainTab:Select()
 
 WindUI:Notify({
-    Title = "Zombie Hub Loaded",
-    Content = "Press RightShift to toggle UI",
+    Title    = "Ranged Hub",
+    Content  = "Loaded. Supported targets: Zombie, Crawler, Runner.",
+    Icon     = "check",
     Duration = 5,
 })
