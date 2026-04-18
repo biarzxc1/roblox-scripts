@@ -1,4 +1,4 @@
-local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+local Fluent = loadstring(game:HttpGet("https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"))()
 
 local Players          = game:GetService("Players")
 local RunService       = game:GetService("RunService")
@@ -7,9 +7,6 @@ local Workspace        = game:GetService("Workspace")
 local LocalPlayer      = Players.LocalPlayer
 local CharactersFolder = Workspace:WaitForChild("Characters")
 
--- ══════════════════════════════════════════════════════════════════════════════
--- STATE
--- ══════════════════════════════════════════════════════════════════════════════
 local State = {
     AutoShoot    = false,
     Range        = 250,
@@ -18,14 +15,10 @@ local State = {
     WallCheck    = true,
     TargetMode   = "Smartest",
 
-    -- RA shares AutoShoot / Range / WallCheck / FireRate from above
     RAAutoReload = false,
     RAMagSize    = 7,
 }
 
--- ══════════════════════════════════════════════════════════════════════════════
--- THREAT TIERS
--- ══════════════════════════════════════════════════════════════════════════════
 local ThreatTier = {
     Brute = 5, Experiment = 5, Exterminator = 5,
     Muscle = 4, Screamer = 4, ["Night Hunter"] = 4, Elemental = 4,
@@ -44,9 +37,6 @@ for name in pairs(ThreatTier) do SupportedTypes[name] = true end
 local math_sqrt = math.sqrt
 local os_clock  = os.clock
 
--- ══════════════════════════════════════════════════════════════════════════════
--- LOS RAYCAST
--- ══════════════════════════════════════════════════════════════════════════════
 local charParams = RaycastParams.new()
 charParams.FilterType = Enum.RaycastFilterType.Exclude
 
@@ -68,9 +58,6 @@ local function hasLOS(originPos, model, head)
     return result.Instance and result.Instance:IsDescendantOf(model)
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- HEAD FINDER — robust, all zombie types
--- ══════════════════════════════════════════════════════════════════════════════
 local function findHead(model)
     local h = model:FindFirstChild("Head")
     if h and h:IsA("BasePart") then return h end
@@ -80,15 +67,10 @@ local function findHead(model)
     return model:FindFirstChild("HumanoidRootPart")
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- REMOTE ARSENAL FINDER
--- *** FIX: Only checks Character (equipped). Backpack = not equipped = skip. ***
--- ══════════════════════════════════════════════════════════════════════════════
 local function findRA()
     local char = LocalPlayer.Character
     if not char then return nil, nil, nil, nil end
 
-    -- MUST be equipped in character, NOT in backpack
     local ra = char:FindFirstChild("Remote Arsenal")
     if not ra then return nil, nil, nil, nil end
 
@@ -99,9 +81,6 @@ local function findRA()
     return ra, shoot, reload, syncAmmo
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- RA SLOT TOOL TRACKING
--- ══════════════════════════════════════════════════════════════════════════════
 local raSlotTools = {}
 local raSlotCount = 0
 
@@ -120,7 +99,6 @@ local function hookSetWeaponsClient(ra)
     end)
 end
 
--- Hook immediately if RA is already equipped, else wait for equip
 task.spawn(function()
     while true do
         task.wait(1)
@@ -135,9 +113,6 @@ LocalPlayer.CharacterAdded:Connect(function(char)
     if ra then hookSetWeaponsClient(ra) end
 end)
 
--- ══════════════════════════════════════════════════════════════════════════════
--- RA AMMO READER
--- ══════════════════════════════════════════════════════════════════════════════
 local function readRAAmmo()
     if #raSlotTools == 0 then return nil end
     local total = 0
@@ -148,9 +123,6 @@ local function readRAAmmo()
     return total
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- RA RELOAD
--- ══════════════════════════════════════════════════════════════════════════════
 local lastRAReloadAt = -999
 local raShotCount    = 0
 
@@ -184,9 +156,6 @@ local function doRAReload()
     end)
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- REGULAR WEAPON FINDER
--- ══════════════════════════════════════════════════════════════════════════════
 local CachedTool, CachedShoot, CachedReload = nil, nil, nil
 
 local function invalidateWeapon()
@@ -229,9 +198,6 @@ if LocalPlayer.Character then onCharAdded(LocalPlayer.Character) end
 LocalPlayer.CharacterAdded:Connect(onCharAdded)
 LocalPlayer.CharacterRemoving:Connect(invalidateWeapon)
 
--- ══════════════════════════════════════════════════════════════════════════════
--- TARGET FINDER
--- ══════════════════════════════════════════════════════════════════════════════
 local function getTarget(originPos, rangeSq, wallCheck)
     local best, bestScore = nil, -math.huge
     local smart = State.TargetMode == "Smartest"
@@ -269,9 +235,6 @@ local function getTarget(originPos, rangeSq, wallCheck)
     return nil, nil
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- MAIN WEAPON FIRE
--- ══════════════════════════════════════════════════════════════════════════════
 local function fireMainWeapon(shoot, originPos, tChar, tHead)
     local hp = tHead.Position
     pcall(function()
@@ -289,12 +252,9 @@ local function fireMainWeapon(shoot, originPos, tChar, tHead)
     end)
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- REMOTE ARSENAL FIRE
--- ══════════════════════════════════════════════════════════════════════════════
 local function fireRemoteArsenal(originPos, tChar, tHead)
     local _, shoot = findRA()
-    if not shoot then return end   -- RA not equipped → skip silently
+    if not shoot then return end
 
     local origin = vector.create(originPos.X, originPos.Y, originPos.Z)
     local hp     = tHead.Position
@@ -324,9 +284,6 @@ local function fireRemoteArsenal(originPos, tChar, tHead)
     end
 end
 
--- ══════════════════════════════════════════════════════════════════════════════
--- RA AUTO-RELOAD: REAL AMMO DETECTION LOOP
--- ══════════════════════════════════════════════════════════════════════════════
 task.spawn(function()
     while true do
         task.wait(0.1)
@@ -338,9 +295,6 @@ task.spawn(function()
     end
 end)
 
--- ══════════════════════════════════════════════════════════════════════════════
--- RA AUTO-RELOAD: TIMED FALLBACK LOOP
--- ══════════════════════════════════════════════════════════════════════════════
 task.spawn(function()
     while true do
         task.wait(0.2)
@@ -352,9 +306,6 @@ task.spawn(function()
     end
 end)
 
--- ══════════════════════════════════════════════════════════════════════════════
--- MAIN WEAPON AUTO-RELOAD
--- ══════════════════════════════════════════════════════════════════════════════
 local regReloading  = false
 local lastRegReload = 0
 
@@ -391,11 +342,6 @@ task.spawn(function()
     end
 end)
 
--- ══════════════════════════════════════════════════════════════════════════════
--- COMBINED SHOOT LOOP
--- Ranged Aura fires main weapon + RA (if equipped) at the same target.
--- RA only fires if findRA() returns a shoot remote (i.e. equipped in character).
--- ══════════════════════════════════════════════════════════════════════════════
 local lastMainFire = 0
 RunService.Heartbeat:Connect(function()
     if not State.AutoShoot then return end
@@ -411,77 +357,110 @@ RunService.Heartbeat:Connect(function()
 
     lastMainFire = now
 
-    -- Fire main weapon (if equipped)
     local tool, shoot = resolveWeapon()
     if tool and shoot then
         fireMainWeapon(shoot, hrp.Position, tChar, tHead)
     end
 
-    -- Fire Remote Arsenal (only if equipped in character)
     fireRemoteArsenal(hrp.Position, tChar, tHead)
 end)
 
 -- ══════════════════════════════════════════════════════════════════════════════
--- UI — single Main tab, no separate Remote Arsenal tab
+-- FLUENT UI — MOBILE RESPONSIVE
 -- ══════════════════════════════════════════════════════════════════════════════
-local Window = WindUI:CreateWindow({
-    Title        = "STA Hub",
-    Icon         = "crosshair",
-    Author       = "Kaizen",
-    Folder       = "STA Hub",
-    Size         = UDim2.fromOffset(560, 500),
-    Transparent  = true,
-    Theme        = "Dark",
-    SideBarWidth = 180,
-    HasOutline   = true,
+local UserInputService = game:GetService("UserInputService")
+local GuiService       = game:GetService("GuiService")
+
+local isMobile   = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local viewport   = workspace.CurrentCamera.ViewportSize
+local screenW    = viewport.X
+local screenH    = viewport.Y
+
+local winW, winH, tabW
+if isMobile then
+    winW = math.min(screenW - 20, 360)
+    winH = math.min(screenH - 80, 500)
+    tabW = 110
+else
+    winW = 560
+    winH = 460
+    tabW = 160
+end
+
+local Window = Fluent:CreateWindow({
+    Title       = "STA Hub",
+    SubTitle    = "by Kaizen",
+    TabWidth    = tabW,
+    Size        = UDim2.fromOffset(winW, winH),
+    Acrylic     = not isMobile,
+    Theme       = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl,
 })
 
-local Main = Window:Tab({ Title = "Main", Icon = "crosshair" })
+local Tabs = {
+    Main = Window:AddTab({ Title = "Main", Icon = "crosshair" }),
+}
 
-Main:Toggle({
-    Title = "Ranged Aura", Icon = "target",
-    Desc  = "Auto-shoots enemies with your equipped weapon (+ Remote Arsenal if equipped)",
-    Value = false,
+local Main = Tabs.Main
+
+Main:AddToggle("RangedAura", {
+    Title   = "Ranged Aura",
+    Description = "Auto-shoots enemies with your equipped weapon (+ Remote Arsenal if equipped)",
+    Default = false,
     Callback = function(v)
         State.AutoShoot = v
         if not v then raShotCount = 0 end
     end,
 })
-Main:Toggle({
-    Title = "Smart Target", Icon = "cpu",
-    Desc  = "ON = Threat tier + HP first  |  OFF = Closest first",
-    Value = true,
-    Callback = function(v) State.TargetMode = v and "Smartest" or "Closest" end,
-})
-Main:Slider({
-    Title = "Range", Icon = "radar",
-    Desc  = "Max engagement distance in studs (applies to both main weapon and Remote Arsenal)",
-    Value = { Min = 10, Max = 500, Default = 250 }, Step = 1,
-    Callback = function(v) State.Range = tonumber(v) or 250 end,
-})
-Main:Toggle({
-    Title = "Wall Check (LOS)", Icon = "shield",
-    Desc  = "Skip enemies blocked by walls (applies to both main weapon and Remote Arsenal)",
-    Value = true,
-    Callback = function(v) State.WallCheck = v end,
-})
-Main:Slider({
-    Title = "Fire Rate", Icon = "zap",
-    Desc  = "Seconds between shots (applies to both main weapon and Remote Arsenal)",
-    Value = { Min = 0.05, Max = 1.0, Default = 0.1 }, Step = 0.05,
-    Callback = function(v) State.FireRate = tonumber(v) or 0.1 end,
-})
-Main:Toggle({
-    Title = "Auto Reload (Main)", Icon = "refresh-cw",
-    Desc  = "Reloads main weapon instantly when ammo hits 0",
-    Value = false,
-    Callback = function(v) State.AutoReload = v end,
-})
-Main:Toggle({
-    Title = "RA Auto Reload", Icon = "refresh-cw",
-    Desc  = "Auto-reloads Remote Arsenal when ammo is depleted (only works if RA is equipped)",
-    Value = false,
+
+Main:AddToggle("SmartTarget", {
+    Title   = "Smart Target",
+    Description = "ON = Threat tier + HP first  |  OFF = Closest first",
+    Default = true,
     Callback = function(v)
+        State.TargetMode = v and "Smartest" or "Closest"
+    end,
+})
+
+Main:AddSlider("Range", {
+    Title       = "Range",
+    Description = "Max engagement distance in studs",
+    Default     = 250,
+    Min         = 10,
+    Max         = 500,
+    Rounding    = 0,
+    Callback    = function(v) State.Range = v end,
+})
+
+Main:AddToggle("WallCheck", {
+    Title       = "Wall Check (LOS)",
+    Description = "Skip enemies blocked by walls",
+    Default     = true,
+    Callback    = function(v) State.WallCheck = v end,
+})
+
+Main:AddSlider("FireRate", {
+    Title       = "Fire Rate",
+    Description = "Seconds between shots (lower = faster)",
+    Default     = 0.1,
+    Min         = 0.05,
+    Max         = 1.0,
+    Rounding    = 2,
+    Callback    = function(v) State.FireRate = v end,
+})
+
+Main:AddToggle("AutoReload", {
+    Title       = "Auto Reload (Main)",
+    Description = "Reloads main weapon instantly when ammo hits 0",
+    Default     = false,
+    Callback    = function(v) State.AutoReload = v end,
+})
+
+Main:AddToggle("RAAutoReload", {
+    Title       = "RA Auto Reload",
+    Description = "Auto-reloads Remote Arsenal when ammo is depleted (only works if RA is equipped)",
+    Default     = false,
+    Callback    = function(v)
         State.RAAutoReload = v
         if v then
             raShotCount    = 0
@@ -494,34 +473,92 @@ Main:Toggle({
         end
     end,
 })
-Main:Slider({
-    Title = "RA Mag Size", Icon = "layers",
-    Desc  = "Remote Arsenal pistol mag size — used for shot-count reload trigger (default: 7)",
-    Value = { Min = 1, Max = 30, Default = 7 }, Step = 1,
-    Callback = function(v)
-        State.RAMagSize = tonumber(v) or 7
-        raShotCount     = 0
-    end,
-})
-Main:Paragraph({
-    Title = "Remote Arsenal Note", Icon = "info",
-    Desc  = "RA fires automatically with Ranged Aura — no separate toggle needed.\n"
-         .. "RA only fires when the Remote Arsenal tool is EQUIPPED (in your character).\n"
-         .. "If RA is in your backpack (not equipped), it will NOT fire.",
-})
-Main:Paragraph({
-    Title = "Priority Tiers", Icon = "info",
-    Desc  = "T5 Boss: Brute · Experiment · Exterminator\n"
-         .. "T4: Muscle · Screamer · Night Hunter · Elemental\n"
-         .. "T3 Mutations: Armored Zombie · Enforcer Riot · Bloater Acidic · Blitzer Runner\n"
-         .. "T3 Raiders: Bandit · Rebel · Gunner · Sniper · Heavy Rebel · Butcher\n"
-         .. "T3 Mid: Riot · Spitter · Phaser · Hazmat · Bloater\n"
-         .. "T2: Runner · Crawler  |  T1: Zombie · Emerald Zombie",
+
+Main:AddParagraph({
+    Title   = "Remote Arsenal Note",
+    Content = "RA fires automatically with Ranged Aura — no separate toggle needed.\n"
+           .. "RA only fires when the Remote Arsenal tool is EQUIPPED (in your character).\n"
+           .. "If RA is in your backpack (not equipped), it will NOT fire.",
 })
 
-WindUI:Notify({
+Main:AddParagraph({
+    Title   = "Priority Tiers",
+    Content = "T5 Boss: Brute · Experiment · Exterminator\n"
+           .. "T4: Muscle · Screamer · Night Hunter · Elemental\n"
+           .. "T3 Mutations: Armored Zombie · Enforcer Riot · Bloater Acidic · Blitzer Runner\n"
+           .. "T3 Raiders: Bandit · Rebel · Gunner · Sniper · Heavy Rebel · Butcher\n"
+           .. "T3 Mid: Riot · Spitter · Phaser · Hazmat · Bloater\n"
+           .. "T2: Runner · Crawler  |  T1: Zombie · Emerald Zombie",
+})
+
+Window:SelectTab(1)
+
+Fluent:Notify({
     Title    = "STA Hub v12",
-    Content  = "RA merged into Ranged Aura — equip check fixed!",
-    Icon     = "zap",
+    Content  = isMobile and "Mobile mode enabled! Tap the button to toggle UI." or "Loaded! Press Left Ctrl to hide/show.",
     Duration = 6,
 })
+
+if isMobile then
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name             = "STAMobileToggle"
+    screenGui.ResetOnSpawn     = false
+    screenGui.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
+    screenGui.DisplayOrder     = 999
+    screenGui.Parent           = game:GetService("CoreGui")
+
+    local btn = Instance.new("TextButton")
+    btn.Size            = UDim2.fromOffset(52, 52)
+    btn.Position        = UDim2.new(0, 12, 1, -72)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+    btn.TextColor3      = Color3.fromRGB(255, 255, 255)
+    btn.Text            = "STA"
+    btn.Font            = Enum.Font.GothamBold
+    btn.TextSize        = 13
+    btn.BorderSizePixel = 0
+    btn.Parent          = screenGui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 14)
+    corner.Parent       = btn
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color     = Color3.fromRGB(100, 100, 220)
+    stroke.Thickness = 1.5
+    stroke.Parent    = btn
+
+    local isVisible = true
+    btn.MouseButton1Click:Connect(function()
+        isVisible = not isVisible
+        Window:SetVisible(isVisible)
+        btn.Text             = isVisible and "STA" or "▶"
+        btn.BackgroundColor3 = isVisible
+            and Color3.fromRGB(30, 30, 36)
+            or  Color3.fromRGB(20, 20, 60)
+    end)
+
+    local dragging, dragStart, startPos = false, nil, nil
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = btn.Position
+        end
+    end)
+    btn.InputChanged:Connect(function(input)
+        if dragging and input.UserInputType == Enum.UserInputType.Touch then
+            local delta = input.Position - dragStart
+            btn.Position = UDim2.new(
+                startPos.X.Scale,
+                math.clamp(startPos.X.Offset + delta.X, 0, screenW - 52),
+                startPos.Y.Scale,
+                math.clamp(startPos.Y.Offset + delta.Y, -screenH + 52, 0)
+            )
+        end
+    end)
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+end
